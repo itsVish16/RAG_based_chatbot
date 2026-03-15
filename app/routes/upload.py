@@ -12,7 +12,13 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 ALLOWED_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "text/plain",
+    "text/html",
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
 }
 
 MAX_FILE_SIZE = 50 * 1024 * 1024   # 50 MB

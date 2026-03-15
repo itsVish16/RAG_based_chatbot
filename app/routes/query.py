@@ -55,3 +55,32 @@ async def index_status():
         "bm25_documents": bm25_store.total_documents(),
         "ready": vector_store.total_vectors() > 0,
     }
+
+
+@router.get("/documents")
+async def list_documents():
+    """List all indexed documents and their chunk counts."""
+    return {"documents": rag_pipeline.list_documents()}
+
+
+@router.post("/summarize")
+async def summarize_document(document_id: str):
+    """
+    Summarize an entire document using Map-Reduce.
+    Use the document_id returned from /upload.
+
+    Note: This calls the LLM once per chunk + once more for synthesis.
+    Latency = N_chunks × LLM_latency. For a 10-chunk doc ≈ 10-15 seconds.
+    """
+    try:
+        logger.info(f"Summarization requested for document: {document_id}")
+        summary = rag_pipeline.summarize_document(document_id)
+        return {
+            "document_id": document_id,
+            "summary": summary,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Summarization failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")

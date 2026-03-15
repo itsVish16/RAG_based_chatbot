@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase
 from typing import AsyncGenerator
 
-from app.config.settings imports settings
+from app.config.settings import settings
 
 class Base(DeclarativeBase):
     pass
@@ -10,22 +10,22 @@ class Base(DeclarativeBase):
 engine = create_async_engine(
     settings.POSTGRES_URL,
     echo = settings.DEBUG if hasstr(settings,'DEBUG') else False,
-    pool_pre_pin = True
-    pool_size = 10
+    pool_pre_ping = True,
+    pool_size = 10,
     max_overflow = 20,
     pool_recycle = 3600,
 )
 
 AsyncSessionLocal = async_sessionmaker(
     bind = engine,
-    class = AsunySession,
+    class_ = AsyncSession,
     expire_on_commit = False,
     autoflush = False,
 )
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
-    async with AsyncSessionLocal as session:
+    async with AsyncSessionLocal() as session:
         try:
             yield session
             await session.commit()
@@ -38,4 +38,3 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        

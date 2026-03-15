@@ -11,41 +11,44 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingService:
     """
-    Local embedding using SentenceTransformers.
-    No API calls, no quota issues — runs fully on your machine.
-    Model: google/gemma-embedding-300m
+    Embedding service using Mistral API (`mistral-embed`).
     """
 
     def __init__(self):
-        logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        # Downloads model on first run, then caches locally
-        self.model = SentenceTransformer(settings.EMBEDDING_MODEL)
-        self.dimension = settings.EMBEDDING_DIMENSION
         self._cache: dict[str, List[float]] = {}
-        logger.info(f"Embedding model loaded. Dimension: {self.dimension}")
+        self.dimension = settings.EMBEDDING_DIMENSION
+        self.client = None
+
+    def _get_client(self):
+        if self.client is None:
+            from mistralai.client.sdk import Mistral
+            if not settings.MISTRAL_API_KEY:
+                raise ValueError("MISTRAL_API_KEY is not set in settings/.env")
+            self.client = Mistral(api_key=settings.MISTRAL_API_KEY)
+        return self.client
 
     def embed_text(self, text: str) -> List[float]:
-        """Embed a single string. Checks in-memory cache first."""
+        """Embed a single string."""
         cache_key = self._hash(text)
-
         if cache_key in self._cache:
-            logger.debug("Embedding cache hit")
             return self._cache[cache_key]
 
-        embedding = self.model.encode(text, convert_to_numpy=True).tolist()
+        client = self._get_client()
+        response = client.embeddings.create(
+            inputs=[text],
+            model=settings.MISTRAL_EMBEDDING_MODEL
+        )
+        embedding = response.data[0].embedding
+
         self._cache[cache_key] = embedding
         return embedding
 
     def embed_batch(self, texts: List[str], batch_size: int = 64) -> List[List[float]]:
-        """
-        Embed multiple texts efficiently using local model.
-        Much faster than API calls for batches.
-        """
-        results: List[List[float]] = [None] * len(texts)
+        """Embed multiple texts with caching support."""
+        results: List[Optional[List[float]]] = [None] * len(texts)
         uncached_indices: List[int] = []
         uncached_texts: List[str] = []
 
-        # Check cache
         for i, text in enumerate(texts):
             key = self._hash(text)
             if key in self._cache:
@@ -55,25 +58,24 @@ class EmbeddingService:
                 uncached_texts.append(text)
 
         logger.info(
-            f"Embedding {len(texts)} texts: "
-            f"{len(texts) - len(uncached_texts)} cached, "
-            f"{len(uncached_texts)} to embed locally"
+            f"Embedding batch: {len(texts)} texts "
+            f"({len(texts) - len(uncached_texts)} cached, "
+            f"{len(uncached_texts)} new)"
         )
 
         if uncached_texts:
-            # SentenceTransformers handles batching internally
-            embeddings = self.model.encode(
-                uncached_texts,
-                batch_size=batch_size,
-                convert_to_numpy=True,
-                show_progress_bar=len(uncached_texts) > 10,
-            ).tolist()
+            client = self._get_client()
+            response = client.embeddings.create(
+                inputs=uncached_texts,
+                model=settings.MISTRAL_EMBEDDING_MODEL
+            )
+            embeddings = [d.embedding for d in response.data]
 
             for idx, embedding in zip(uncached_indices, embeddings):
                 results[idx] = embedding
                 self._cache[self._hash(texts[idx])] = embedding
 
-        return results
+        return results  # type: ignore
 
     def get_dimension(self) -> int:
         return self.dimension
@@ -86,5 +88,5 @@ class EmbeddingService:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-# Singleton — model loads once at startup
+# Singleton
 embedding_service = EmbeddingService()

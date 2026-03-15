@@ -9,7 +9,7 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(
     settings.POSTGRES_URL,
-    echo = settings.DEBUG if hasstr(settings,'DEBUG') else False,
+    echo = settings.DEBUG if hasattr(settings,'DEBUG') else False,
     pool_pre_ping = True,
     pool_size = 10,
     max_overflow = 20,

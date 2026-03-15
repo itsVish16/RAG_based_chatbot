@@ -1,5 +1,9 @@
 import logging
 from fastapi import APIRouter, HTTPException
+from app.utils.security import get_current_user
+from app.models.user import User
+from fastapi import Depends
+
 
 from app.services.rag_pipeline import rag_pipeline
 from app.schema.rag_schema import QueryRequest, QueryResponse, SourceChunkResponse
@@ -10,7 +14,10 @@ router = APIRouter(prefix="/rag", tags=["RAG"])
 
 
 @router.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+async def query_documents(
+    request: QueryRequest, 
+    current_user: User = Depends(get_current_user)
+):
     """
     Ask a question against all indexed documents.
     Returns an answer with source chunks used to generate it.
@@ -19,9 +26,11 @@ async def query_documents(request: QueryRequest):
         logger.info(f"Query received: '{request.question}'")
 
         result = rag_pipeline.query(
-            question=request.question,
-            top_k=request.top_k,
+        question=request.question,
+        user_id=str(current_user.id),  # ⬅️ Pass it safely
+        top_k=request.top_k,
         )
+
 
         return QueryResponse(
             answer=result.answer,

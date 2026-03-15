@@ -3,7 +3,7 @@ import uuid
 from typing import List, Optional
 from dataclasses import dataclass, field
 import time
-from openai import OpenAI
+from mistralai.client.sdk import Mistral
 
 from app.services.document_parser import document_parser
 from app.services.chunker import text_chunker, Chunk
@@ -42,7 +42,6 @@ class RAGResponse:
 # ──────────────────────────────────────────
 
 # chunk_id → chunk text
-# e.g. {"doc_abc_0": "first chunk text...", "doc_abc_1": "second chunk..."}
 _chunk_store: dict[str, str] = {}
 
 # document_id → list of chunk_ids (for whole-doc summarization)
@@ -57,11 +56,12 @@ class RAGPipeline:
     """
 
     def __init__(self):
-        # LM Studio local endpoint — OpenAI-compatible, no real API key needed
-        self.llm = OpenAI(
-            base_url=settings.LM_STUDIO_BASE_URL,
-            api_key=settings.LM_STUDIO_API_KEY,
-        )
+        logger.info("Initializing RAGPipeline with Mistral")
+        if not settings.MISTRAL_API_KEY:
+            raise ValueError("MISTRAL_API_KEY is not set in settings/.env")
+            
+        self.llm = Mistral(api_key=settings.MISTRAL_API_KEY)
+        self.model_name = settings.MISTRAL_LLM_MODEL
 
     # ══════════════════════════════════════════
     # INGESTION PIPELINE
@@ -72,6 +72,7 @@ class RAGPipeline:
         file_bytes: bytes,
         filename: str,
         content_type: str,
+        user_id: str
     ) -> dict:
         """
         Full ingestion pipeline: file → indexed and ready to query.
@@ -109,7 +110,7 @@ class RAGPipeline:
         logger.info(f"Embedded: {len(embeddings)} vectors")
 
         # Step 5: Add to FAISS index
-        vector_store.add_embeddings(embeddings, chunk_ids)
+        vector_store.add_embeddings(embeddings, chunk_ids, user_id= user_id)
 
         # Step 6: Add to BM25 index
         bm25_store.add_documents(chunk_texts, chunk_ids)
@@ -129,10 +130,43 @@ class RAGPipeline:
     # ══════════════════════════════════════════
     # QUERY PIPELINE
     # ══════════════════════════════════════════
+    
+    def _rewrite_query(self, user_query: str) -> str:
+        """
+        Query Expansion: Rewrites user's query into dense keywords 
+        optimized for Vector Search embedding lookup.
+        """
+        try:
+            response = self.llm.chat.complete(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": (
+                            "You are a Search Assistant. Your job is to take a conversational query "
+                            "and output a dense, comma-separated list of 3 keyword phrases optimized "
+                            "for Vector Search. Only return the comma-separated strings. "
+                            "Do not include explanations or markdown."
+                        )
+                    },
+                    {"role": "user", "content": f"Query: {user_query}"}
+                ],
+                temperature=0.1,
+                max_tokens=64
+            )
+            expanded_repr = response.choices[0].message.content.strip()
+            logger.info(f"Query Expansion: '{user_query}' ➔ '{expanded_repr}'")
+            return expanded_repr
+            
+        except Exception as e:
+            logger.warning(f"Query Expansion failed: {e}. Falling back to original.")
+            return user_query
+
 
     def query(
         self,
         question: str,
+        user_id: str,
         top_k: int = settings.TOP_K,
     ) -> RAGResponse:
         """
@@ -158,9 +192,11 @@ class RAGPipeline:
         t1 = time.perf_counter()
         # (embedding happens inside hybrid_search.search → embed_text)
 
-        # Step 2: Hybrid search → top-k chunk IDs
+        # Step 1: Expand prompt for Vector DB
+        search_query = self._rewrite_query(question)
+        # Step 2: Hybrid search with metadata filtering
         hybrid_results: List[HybridResult] = hybrid_search.search(
-            question, top_k=top_k
+            search_query, user_id=user_id, top_k=top_k
         )
         t2 = time.perf_counter()
 
@@ -239,8 +275,8 @@ Question: {question}
 Answer:"""
 
         try:
-            response = self.llm.chat.completions.create(
-                model=settings.LLM_MODEL,
+            response = self.llm.chat.complete(
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_prompt},
@@ -323,8 +359,8 @@ Answer:"""
     def _summarize_chunk(self, chunk_text: str, chunk_num: int, total: int) -> str:
         """MAP step: Summarize a single chunk."""
         try:
-            response = self.llm.chat.completions.create(
-                model=settings.LLM_MODEL,
+            response = self.llm.chat.complete(
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content":
                         "You are a precise summarizer. Summarize the given text "
@@ -377,8 +413,8 @@ Answer:"""
     def _reduce_batch(self, combined_summaries: str, round_num: int) -> str:
         """Reduce a single batch of summaries into one."""
         try:
-            response = self.llm.chat.completions.create(
-                model=settings.LLM_MODEL,
+            response = self.llm.chat.complete(
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content":
                         "You are a precise summarizer. Synthesize the given section summaries "

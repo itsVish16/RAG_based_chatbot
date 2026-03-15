@@ -6,16 +6,12 @@ from functools import lru_cache
 class Settings(BaseSettings):
     """Settings for the application"""
 
-    # ── LM Studio (Local LLM) ──────────────────
-    LM_STUDIO_BASE_URL: str = "http://localhost:1234/v1"
-    LM_STUDIO_API_KEY: str = "lm-studio"   # LM Studio accepts any non-empty string
-    LLM_MODEL: str = "lfm-2.5"            # must match model name shown in LM Studio
-
-    # ── Embedding (local SentenceTransformers) ──
-    # BAAI/bge-small-en-v1.5 → free, fast, top MTEB benchmark, 384-dim
-    # Switch to google/gemma-embedding-300m only after HF login + model access
-    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
-    EMBEDDING_DIMENSION: int = 384         # output dim for bge-small-en-v1.5
+    # ── Mistral API Configs (Primary) ───────────
+    MISTRAL_API_KEY: str = ""
+    MISTRAL_LLM_MODEL: str = "mistral-small-latest"
+    MISTRAL_EMBEDDING_MODEL: str = "mistral-embed"
+    # Mistral embed is 1024 dimension
+    EMBEDDING_DIMENSION: int = 1024
 
     # ── RAG Settings ───────────────────────────
     CHUNK_SIZE: int = 512
@@ -24,9 +20,11 @@ class Settings(BaseSettings):
     SIMILARITY_THRESHOLD: float = 0.7
     CACHE_TTL: int = 3600
 
-    # ── Optional Services (not needed right now) ─
-    OPENAI_API_KEY: str = ""
-    TOOL_ROUTER_MODEL: str = "gpt-4o-mini"
+    SECRET_KEY: str = "your-super-secret-key-change-this-in-prod"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 
+
+    # ── External Services (Optional) ────────────
     TAVILY_API_KEY: str = ""
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
@@ -35,9 +33,16 @@ class Settings(BaseSettings):
     POSTGRES_URL: str = ""
     REDIS_URL: str = "redis://localhost:6379"
 
+        # ── Qdrant Configs ──────────────────────────
+    QDRANT_URL: str = ""
+    QDRANT_API_KEY: str = ""
+    QDRANT_COLLECTION_NAME: str = "rag_chatbot"
+
+
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 @lru_cache()

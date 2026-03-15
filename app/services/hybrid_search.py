@@ -45,9 +45,10 @@ class HybridSearch:
     def search(
         self,
         query: str,
+        user_id: str,
         top_k: int = settings.TOP_K,
-        semantic_weight: float = 0.6,    # slightly favour semantic for RAG
-        bm25_weight: float = 0.4,
+        semantic_weight: float = 1.0,    # slightly favour semantic for RAG
+        bm25_weight: float = 0.0,
     ) -> List[HybridResult]:
         """
         Run hybrid search and return fused results.
@@ -65,7 +66,7 @@ class HybridSearch:
         # 1. Semantic search (FAISS)
         query_embedding = embedding_service.embed_text(query)
         semantic_results: List[SearchResult] = vector_store.search(
-            query_embedding, top_k=fetch_k
+            query_embedding, user_id=user_id, top_k=fetch_k  # ⬅️ Added user_id
         )
 
         # 2. Keyword search (BM25)

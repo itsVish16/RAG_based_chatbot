@@ -26,34 +26,7 @@ class DocumentParser:
     }
 
     def __init__(self):
-        self._converter = None   # lazy load — Docling is heavy
-
-    def _get_converter(self):
-        """Lazy-load Docling converter with OCR pipeline enabled."""
-        if self._converter is None:
-            try:
-                from docling.document_converter import DocumentConverter, PdfFormatOption
-                from docling.datamodel.pipeline_options import PdfPipelineOptions
-                from docling.datamodel.base_models import InputFormat
-
-                # PdfPipelineOptions is the correct class (not PipelineOptions)
-                pipeline_options = PdfPipelineOptions()
-                pipeline_options.do_ocr = True               # OCR for scanned pages
-                pipeline_options.do_table_structure = True   # proper table extraction
-
-                self._converter = DocumentConverter(
-                    format_options={
-                        InputFormat.PDF: PdfFormatOption(
-                            pipeline_options=pipeline_options
-                        )
-                    }
-                )
-                logger.info("Docling converter initialized with OCR (PdfPipelineOptions)")
-            except Exception as e:
-                logger.warning(f"Docling OCR setup failed ({e}) — falling back to basic converter")
-                from docling.document_converter import DocumentConverter
-                self._converter = DocumentConverter()
-        return self._converter
+        pass  # No heavy model initialized on start
 
     def parse(self, file_bytes: bytes, content_type: str, filename: str = "") -> str:
         """
@@ -78,6 +51,8 @@ class DocumentParser:
                 f"Supported: PDF, DOCX, PPTX, TXT, HTML, PNG, JPG"
             )
 
+        from app.config.settings import settings
+
         logger.info(f"Parsing {doc_type.upper()}: {filename or 'unnamed'} ({len(file_bytes)} bytes)")
 
         # Simple parsers for text/html (no Docling needed)
@@ -86,41 +61,109 @@ class DocumentParser:
         if doc_type == "html":
             return self._parse_html(file_bytes)
 
-        # Docling handles everything else (PDF, DOCX, PPTX, Images)
-        return self._parse_with_docling(file_bytes, filename or f"file.{doc_type}")
+        # ── Step 1: Lightweight PDF Parsing ─────────────────────────────
+        if doc_type == "pdf":
+            logger.info("Attempting lightweight PDF parsing with PyMuPDF")
+            text = self._parse_with_pymupdf(file_bytes)
+            if text.strip():
+                return text
+            logger.warning("PyMuPDF extracted 0 text (scanned doc).")
+
+            # Try Mistral Vision OCR before Docling (which takes heavy RAM)
+            if settings.MISTRAL_API_KEY:
+                logger.info("Attempting Mistral Vision OCR for scanned PDF")
+                mistral_text = self._parse_pdf_with_mistral(file_bytes)
+                if mistral_text:
+                    return mistral_text
+
+        # ── Step 1b: Image Parsing with Mistral Vision ──────────────────
+        if doc_type == "image":
+            if settings.MISTRAL_API_KEY:
+                logger.info("Attempting Mistral Vision OCR for Image")
+                return self._parse_image_with_mistral(file_bytes)
+            else:
+                raise ValueError("MISTRAL_API_KEY is required for image parsing")
+
+        # ── Step 2: Fallback ─────────────────────────────────────────────
+        raise ValueError(f"Could not extract text from {filename or 'document'}. Fallback parser disabled.")
 
     # ──────────────────────────────────────────
-    # Docling (universal — PDF, DOCX, PPTX, Images)
+    # Lightweight PDF (PyMuPDF)
     # ──────────────────────────────────────────
 
-    def _parse_with_docling(self, file_bytes: bytes, filename: str) -> str:
-        """
-        Use Docling for OCR-capable parsing.
-        Writes to a temp file (Docling requires a file path).
-        """
-        converter = self._get_converter()
+    def _parse_with_pymupdf(self, file_bytes: bytes) -> str:
+        """Extract text quickly using PyMuPDF (fitz). Low RAM, perfect for Vercel."""
+        try:
+            import fitz
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            text_parts = []
+            for i in range(len(doc)):
+                page_text = doc[i].get_text().strip()
+                if page_text:
+                    text_parts.append(f"[Page {i+1}]\n{page_text}")
+            doc.close()
+            return "\n\n".join(text_parts)
+        except ImportError:
+            logger.warning("pymupdf not installed, install to speed up cloud parsing")
+            return ""
+        except Exception as e:
+            logger.error(f"PyMuPDF parsing failed: {e}")
+            return ""
 
-        # Docling needs a real file path, not bytes
-        suffix = f".{filename.rsplit('.', 1)[-1]}" if "." in filename else ".pdf"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
+
+
+    # ──────────────────────────────────────────
+    # Mistral Vision API (Cloud OCR)
+    # ──────────────────────────────────────────
+
+    def _parse_image_with_mistral(self, file_bytes: bytes) -> str:
+        """Use Mistral Vision model to extract text from a single image."""
+        import base64
+        from mistralai.client.sdk import Mistral
+        from app.config.settings import settings
+
+        client = Mistral(api_key=settings.MISTRAL_API_KEY)
+        encoded = base64.b64encode(file_bytes).decode("utf-8")
 
         try:
-            result = converter.convert(tmp_path)
-            # Export to Markdown — preserves headers, tables, lists
-            markdown_text = result.document.export_to_markdown()
-
-            if not markdown_text or not markdown_text.strip():
-                raise ValueError(f"Docling extracted no text from {filename}")
-
-            logger.info(
-                f"Docling parsed '{filename}': {len(markdown_text)} chars"
+            response = client.chat.complete(
+                model="pixtral-12b",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Extract all text from this image exactly as written. Output only the text."},
+                            {"type": "image_url", "image_url": f"data:image/jpeg;base64,{encoded}"}
+                        ]
+                    }
+                ]
             )
-            return markdown_text
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Mistral Image OCR failed: {e}")
+            return ""
 
-        finally:
-            os.unlink(tmp_path)   # always clean up temp file
+    def _parse_pdf_with_mistral(self, file_bytes: bytes) -> str:
+        """Convert PDF pages to images and run Mistral Vision on them."""
+        try:
+            import fitz
+            import io
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            text_parts = []
+
+            for i in range(len(doc)):
+                page = doc[i]
+                pix = page.get_pixmap()
+                img_bytes = pix.tobytes("jpg")
+                page_text = self._parse_image_with_mistral(img_bytes)
+                if page_text:
+                    text_parts.append(f"[Page {i+1}]\n{page_text}")
+
+            doc.close()
+            return "\n\n".join(text_parts)
+        except Exception as e:
+            logger.error(f"Mistral PDF OCR failed: {e}")
+            return ""
 
     # ──────────────────────────────────────────
     # Simple parsers
